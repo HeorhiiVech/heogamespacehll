@@ -26,7 +26,14 @@ from database import get_db_connection, init_db
 import json
 import sqlite3
 
-from scrims_logic import get_champion_icon_html, get_champion_data
+# Импорты из scrims_logic
+from scrims_logic import (
+    get_champion_icon_html, 
+    get_champion_data, 
+    get_latest_patch_version,
+    aggregate_scrim_data,
+    fetch_and_store_scrims
+)
 from tournament_logic import (
     fetch_and_store_tournament_data,
     TARGET_TOURNAMENT_NAME_FOR_DB,
@@ -34,7 +41,7 @@ from tournament_logic import (
     TEAM_TAG_TO_FULL_NAME,
     ICON_SIZE_DRAFTS,
     get_all_wards_data,
-    get_proximity_data # <<< НОВЫЙ ИМПОРТ
+    get_proximity_data
 )
 from soloq_logic import (
     TEAM_ROSTERS,
@@ -42,6 +49,8 @@ from soloq_logic import (
     fetch_and_store_soloq_data,
     get_soloq_activity_data
 )
+# <<< НОВЫЙ ИМПОРТ
+from start_positions_logic import get_start_positions_data
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "a_default_secret_key_change_me")
@@ -57,18 +66,73 @@ def inject_now():
 def inject_utility_processor():
     champ_data = get_champion_data()
     team_tag_map = TEAM_TAG_TO_FULL_NAME
+    # Добавляем get_latest_patch_version в контекст для JS
     return dict(
         get_champion_icon_html=get_champion_icon_html,
         champion_data=champ_data,
         ICON_SIZE_DRAFTS=ICON_SIZE_DRAFTS,
         team_tag_map=team_tag_map,
         date=date,
-        request=request
+        request=request,
+        get_latest_patch_version=get_latest_patch_version
     )
 
 @app.route('/')
 def index():
     return redirect(url_for('tournament'))
+
+# НОВЫЙ ROUTE ДЛЯ SCRIMS
+@app.route('/scrims')
+def scrims():
+    selected_time_filter = request.args.get('time_filter', 'All Time')
+    selected_side_filter = request.args.get('side_filter', 'all')
+    time_filters = ["All Time", "3 Days", "1 Week", "2 Weeks", "4 Weeks", "2 Months"]
+    side_filters = ["all", "blue", "red"]
+
+    if selected_side_filter not in side_filters:
+        selected_side_filter = 'all'
+
+    try:
+        overall_stats, history_list, player_stats, _ = aggregate_scrim_data(
+            time_filter=selected_time_filter,
+            side_filter=selected_side_filter
+        )
+    except Exception as e:
+        log_message(f"Error in /scrims data aggregation: {e}")
+        flash(f"Error loading scrim data: {e}", "error")
+        overall_stats, history_list, player_stats = {}, [], {}
+
+    return render_template(
+        'scrims.html',
+        overall_stats=overall_stats,
+        history=history_list,
+        player_stats=player_stats,
+        time_filters=time_filters,
+        selected_time_filter=selected_time_filter,
+        selected_side_filter=selected_side_filter
+    )
+
+# НОВЫЙ ROUTE ДЛЯ ОБНОВЛЕНИЯ SCRIMS
+@app.route('/update_scrims', methods=['POST'])
+def update_scrims_route():
+    log_message("Updating scrims data...")
+    try:
+        added_games = fetch_and_store_scrims()
+        if added_games > 0:
+            flash(f"Successfully added {added_games} new scrim game(s)!", "success")
+        elif added_games == 0:
+            flash("No new scrim games found.", "info")
+        else:
+            flash("An error occurred while updating scrims. Check logs.", "error")
+    except Exception as e:
+        log_message(f"Error during scrims update: {e}")
+        flash(f"An unexpected error occurred: {e}", "error")
+
+    # Возвращаемся на страницу scrims с сохранением фильтров
+    time_filter = request.form.get('time_filter', 'All Time')
+    side_filter = request.form.get('side_filter', 'all')
+    return redirect(url_for('scrims', time_filter=time_filter, side_filter=side_filter))
+
 
 @app.route('/tournament')
 def tournament():
@@ -114,7 +178,7 @@ def wards():
     selected_team = request.args.get('team')
     selected_role = request.args.get('role', 'All')
     games_filter = request.args.get('games_filter', '20')
-    selected_champion = request.args.get('champion', 'All') # Новый фильтр
+    selected_champion = request.args.get('champion', 'All')
 
     roles = ["All", "TOP", "JGL", "MID", "BOT", "SUP"]
     games_filters = ["5", "10", "20", "30", "50", "All"]
@@ -125,7 +189,7 @@ def wards():
             selected_team_full_name=selected_team,
             selected_role=selected_role,
             games_filter=games_filter,
-            selected_champion=selected_champion # Передаем нового чемпиона
+            selected_champion=selected_champion
         )
     except Exception as e:
         log_message(f"Error in /wards data aggregation: {e}")
@@ -144,25 +208,21 @@ def wards():
         selected_games_filter=games_filter,
         wards_by_interval=wards_by_interval,
         stats=stats_or_error,
-        available_champions=available_champions, # Передаем список чемпионов
-        selected_champion=selected_champion    # Передаем выбранного чемпиона
+        available_champions=available_champions,
+        selected_champion=selected_champion
     )
 
-# --- НОВЫЙ МАРШРУТ ДЛЯ PROXIMITY ---
 @app.route('/proximity')
 def proximity():
     selected_team = request.args.get('team')
-    # Роль по умолчанию 'JUNGLE', так как это основной вариант использования
     selected_role = request.args.get('role', 'JUNGLE') 
     games_filter = request.args.get('games_filter', '20')
 
-    # Определяем роли для фильтра
     proximity_roles = ["JUNGLE", "SUPPORT"]
     games_filters = ["5", "10", "20", "30", "50", "All"]
 
     all_teams, proximity_stats, players_in_role = [], {}, []
     try:
-        # Вызываем новую функцию из tournament_logic
         all_teams, proximity_stats, players_in_role = get_proximity_data(
             selected_team_full_name=selected_team,
             selected_role=selected_role,
@@ -185,6 +245,40 @@ def proximity():
         selected_games_filter=games_filter,
         stats=proximity_stats,
         players_in_role=players_in_role
+    )
+
+# --- НОВЫЙ МАРШРУТ ДЛЯ START POSITIONS ---
+@app.route('/start_positions')
+def start_positions():
+    selected_team = request.args.get('team')
+    selected_champion = request.args.get('champion', 'All')
+    games_filter = request.args.get('games_filter', '10')
+
+    games_filters = ["5", "10", "15", "20", "All"]
+
+    all_teams, stats, available_champions = [], {}, []
+    try:
+        all_teams, stats, available_champions = get_start_positions_data(
+            selected_team_full_name=selected_team,
+            selected_champion=selected_champion,
+            games_filter=games_filter
+        )
+    except Exception as e:
+        log_message(f"Error in /start_positions data aggregation: {e}")
+        import traceback
+        log_message(traceback.format_exc())
+        flash(f"Error loading start position data: {e}", "error")
+        stats = {"error": "Failed to load start position data."}
+
+    return render_template(
+        'start_positions.html',
+        all_teams=all_teams,
+        selected_team=selected_team,
+        games_filters=games_filters,
+        selected_games_filter=games_filter,
+        available_champions=available_champions,
+        selected_champion=selected_champion,
+        stats=stats
     )
 # --- КОНЕЦ НОВОГО МАРШРУТА ---
 

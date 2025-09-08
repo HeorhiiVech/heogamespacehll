@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+
+{% block title %}Scrim Statistics{% endblock %}
+
+{% block content %}
+    <div class="header-controls">
+        <h1>Scrim Statistics</h1>
+        <div class="controls">
+            <form action="{{ url_for('update_scrims_route', time_filter=selected_time_filter, side_filter=selected_side_filter) }}" method="post">
+                 {# Передаем текущие фильтры в action, чтобы сохранить их после обновления #}
+                <button type="submit" class="button button-update">Update Scrims (GRID API)</button>
+            </form>
+            <form method="get" class="filter-form">
+                 {# Скрытое поле для сохранения фильтра стороны при смене времени #}
+                 <input type="hidden" name="side_filter" value="{{ selected_side_filter }}">
+                <label for="time_filter">Filter:</label>
+                <select name="time_filter" id="time_filter" onchange="this.form.submit()">
+                    {% for filter_option in time_filters %}
+                        <option value="{{ filter_option }}" {% if filter_option == selected_time_filter %}selected{% endif %}>
+                            {{ filter_option }}
+                        </option>
+                    {% endfor %}
+                </select>
+                <noscript><button type="submit" class="button">Apply Filter</button></noscript>
+            </form>
+        </div>
+    </div>
+
+    <hr>
+
+    <h2>Overall Statistics ({{ selected_time_filter }})</h2>
+    {% if overall_stats and overall_stats.total_games > 0 %}
+        <div class="overall-stats-container">
+            <div class="stat-card"> {# Total card без доп. класса #}
+                <h3>Total</h3>
+                <p class="stat-value">{{ overall_stats.total_games }}</p>
+                <p class="stat-label">Games</p>
+                {% set total_wr = (overall_stats.blue_wins + overall_stats.red_wins) / overall_stats.total_games * 100 if overall_stats.total_games else 0 %}
+                <p class="stat-sublabel {{ 'stat-positive' if total_wr >= 50 else 'stat-negative' }}">
+                   {{ "%.1f"|format(total_wr) }}% WR
+                </p>
+                 <small>({{ overall_stats.blue_wins + overall_stats.red_wins }}W - {{ overall_stats.blue_losses + overall_stats.red_losses }}L)</small>
+            </div>
+             {# Добавляем классы stat-card-blue и stat-card-red #}
+            <div class="stat-card stat-card-blue">
+                <h3>Blue Side</h3>
+                 {% set blue_games = overall_stats.blue_wins + overall_stats.blue_losses %}
+                 <p class="stat-value">{{ blue_games }}</p>
+                 <p class="stat-label">Games</p>
+                 {% set blue_wr = overall_stats.blue_wins / blue_games * 100 if blue_games else 0 %}
+                <p class="stat-sublabel {{ 'stat-positive' if blue_wr >= 50 else 'stat-negative' }}">
+                    {{ "%.1f"|format(blue_wr) }}% WR
+                </p>
+                 <small>({{ overall_stats.blue_wins }}W - {{ overall_stats.blue_losses }}L)</small>
+            </div>
+            <div class="stat-card stat-card-red">
+                <h3>Red Side</h3>
+                 {% set red_games = overall_stats.red_wins + overall_stats.red_losses %}
+                 <p class="stat-value">{{ red_games }}</p>
+                 <p class="stat-label">Games</p>
+                {% set red_wr = overall_stats.red_wins / red_games * 100 if red_games else 0 %}
+                <p class="stat-sublabel {{ 'stat-positive' if red_wr >= 50 else 'stat-negative' }}">
+                    {{ "%.1f"|format(red_wr) }}% WR
+                </p>
+                 <small>({{ overall_stats.red_wins }}W - {{ overall_stats.red_losses }}L)</small>
+            </div>
+        </div>
+    {% else %}
+        <p class="notice">No overall statistics available for this period.</p>
+    {% endif %}
+
+    <hr>
+
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+        <h2>Player Champion Stats ({{ selected_time_filter }})</h2>
+        {# НОВЫЕ Кнопки фильтра по стороне #}
+        <div class="side-filter-controls">
+            <a href="{{ url_for('scrims', time_filter=selected_time_filter, side_filter='all') }}"
+               class="button {% if selected_side_filter == 'all' %}active{% endif %}">All</a>
+            <a href="{{ url_for('scrims', time_filter=selected_time_filter, side_filter='blue') }}"
+               class="button {% if selected_side_filter == 'blue' %}active{% endif %}">Blue Side</a>
+            <a href="{{ url_for('scrims', time_filter=selected_time_filter, side_filter='red') }}"
+               class="button {% if selected_side_filter == 'red' %}active{% endif %}">Red Side</a>
+        </div>
+    </div>
+
+    {% if player_stats %}
+    <div class="player-stats-grid">
+        {% for player_name, champs in player_stats.items() %}
+            {% if champs %} {# Показываем колонку только если есть статы для этого игрока с учетом фильтров #}
+            <div class="player-column">
+                <h3>{{ player_name }}</h3>
+                <div class="table-responsive">
+                    {# Добавляем id к таблице для JS #}
+                    <table class="player-champ-table sortable-table" id="table-{{ player_name }}">
+                        <thead>
+                            <tr>
+                                {# Добавляем классы и data-sort-type к заголовкам для JS #}
+                                <th>Icon</th>
+                                <th class="sortable-header" data-sort-col="1" data-sort-type="number">G</th>
+                                <th class="sortable-header" data-sort-col="2" data-sort-type="number">WR%</th>
+                                <th class="sortable-header" data-sort-col="3" data-sort-type="number">KDA</th>
+                                <th class="sortable-header" data-sort-col="4" data-sort-type="number">Dmg</th>
+                                <th class="sortable-header" data-sort-col="5" data-sort-type="number">CS</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {% for champ_name, stats in champs.items() %}
+                             <tr>
+                                <td>{{ stats.icon_html | safe }}</td>
+                                <td>{{ stats.games }}</td>
+                                <td data-sort-value="{{ stats.win_rate }}" class="
+                                    {% if stats.win_rate >= 60 %}wr-high
+                                    {% elif stats.win_rate <= 45 %}wr-low
+                                    {% else %}wr-mid{% endif %}
+                                ">{{ "%.1f"|format(stats.win_rate) }}</td>
+                                <td data-sort-value="{{ stats.kda }}">{{ "%.1f"|format(stats.kda) }}</td>
+                                <td data-sort-value="{{ stats.avg_dmg }}">{{ stats.avg_dmg }}</td>
+                                <td data-sort-value="{{ stats.avg_cs }}">{{ "%.1f"|format(stats.avg_cs) }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {% endif %}
+        {% endfor %}
+    </div>
+    {% else %}
+        <p class="notice">No player statistics available for {{ selected_side_filter if selected_side_filter != 'all' else 'this period'}}{% if selected_side_filter != 'all' %} side{% endif %}.</p>
+    {% endif %}
+
+
+    <hr>
+
+    <h2>Game History ({{ selected_time_filter }})</h2>
+    {% if history %}
+        {# ... (код таблицы истории как раньше) ... #}
+        <div class="table-responsive">
+        <table class="scrims-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Patch</th>
+                    <th>Blue Team</th>
+                    <th>B Bans</th>
+                    <th>B Picks</th>
+                    <th>R Picks</th>
+                    <th>R Bans</th>
+                    <th>Red Team</th>
+                    <th>Result</th>
+                    <th>Duration</th>
+                    </tr>
+            </thead>
+            <tbody>
+                {% for game in history %}
+                <tr>
+                    <td class="col-date">{{ game['Date'] }}</td>
+                    <td class="col-patch">{{ game['Patch'] }}</td>
+                    <td class="col-team">{{ game['Blue_Team_Name'] }}</td>
+                    <td class="col-picks-bans">{{ game['B_Bans_HTML'] | safe }}</td>
+                    <td class="col-picks-bans">{{ game['B_Picks_HTML'] | safe }}</td>
+                    <td class="col-picks-bans">{{ game['R_Picks_HTML'] | safe }}</td>
+                    <td class="col-picks-bans">{{ game['R_Bans_HTML'] | safe }}</td>
+                    <td class="col-team">{{ game['Red_Team_Name'] }}</td>
+                    <td class="col-result result-{{ game['Result'] | lower }}">{{ game['Result'] }}</td>
+                    <td class="col-duration">{{ game['Duration'] }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+        <p class="notice">No game history available for this period.</p>
+    {% endif %}
+
+    {# --- НОВЫЙ Блок JavaScript для сортировки --- #}
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const sortableTables = document.querySelectorAll('.sortable-table');
+
+            sortableTables.forEach(table => {
+                const headers = table.querySelectorAll('th.sortable-header');
+                headers.forEach(header => {
+                    header.addEventListener('click', () => {
+                        const tableBody = table.querySelector('tbody');
+                        const columnIndex = parseInt(header.dataset.sortCol);
+                        const sortType = header.dataset.sortType || 'string'; // 'number' or 'string'
+                        const currentIsAscending = header.classList.contains('asc');
+                        const direction = currentIsAscending ? -1 : 1; // -1 for desc, 1 for asc
+
+                        // Remove sorting classes from other headers
+                        headers.forEach(h => h.classList.remove('asc', 'desc'));
+                        // Add appropriate class to current header
+                        header.classList.toggle('asc', !currentIsAscending);
+                        header.classList.toggle('desc', currentIsAscending);
+
+                        // Sort rows
+                        Array.from(tableBody.querySelectorAll('tr'))
+                            .sort((rowA, rowB) => {
+                                const cellA = rowA.querySelector(`td:nth-child(${columnIndex + 1})`);
+                                const cellB = rowB.querySelector(`td:nth-child(${columnIndex + 1})`);
+
+                                let valueA = cellA.dataset.sortValue || cellA.textContent.trim();
+                                let valueB = cellB.dataset.sortValue || cellB.textContent.trim();
+
+                                if (sortType === 'number') {
+                                    valueA = parseFloat(valueA) || 0;
+                                    valueB = parseFloat(valueB) || 0;
+                                } else {
+                                    valueA = valueA.toLowerCase();
+                                    valueB = valueB.toLowerCase();
+                                }
+
+                                if (valueA < valueB) return -1 * direction;
+                                if (valueA > valueB) return 1 * direction;
+                                return 0;
+                            })
+                            .forEach(sortedRow => tableBody.appendChild(sortedRow)); // Append rows in sorted order
+                    });
+                });
+            });
+        });
+    </script>
+
+{% endblock %}
